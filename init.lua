@@ -11,6 +11,11 @@ local S = minetest.get_translator(modname)
 
 dofile(modpath.."/cooling_lava.lua")
 
+-- deactivate water flow
+--minetest.registered_nodes["default:water_source"].liquid_range = 0
+--local override_liquidrange = {liquid_range = 0}
+--minetest.override_item("default:water_source", override_liquidrange)
+
 -- By making this giant table of all possible permutations of horizontal direction we can avoid
 -- lots of redundant calculations.
 
@@ -42,102 +47,101 @@ local all_direction_permutations = {
 }
 
 local get_node = minetest.get_node
-local set_node = minetest.swap_node
+local swap_node = minetest.swap_node
 
 -- Dynamic liquids
 -----------------------------------------------------------------------------------------------------------------------
 
-local disable_flow_above = tonumber(minetest.settings:get("dynamic_liquid_disable_flow_above"))
-
-if disable_flow_above == nil or disable_flow_above >= 31000 then
-
--- version without altitude check
-	dynamic_liquid.liquid_abm = function(liquid, flowing_liquid, chance)
-		minetest.register_abm({
-			label = "dynamic_liquid " .. liquid .. " and " .. flowing_liquid,
-			nodenames = {liquid},
-			neighbors = {flowing_liquid},
-			interval = 1,
-			chance = chance or 1,
-			catch_up = false,
-			action = function(pos,node) -- Do everything possible to optimize this method
-				local check_pos = {x=pos.x, y=pos.y-1, z=pos.z}
-				local check_node = get_node(check_pos)
-				local check_node_name = check_node.name
-				if check_node_name == flowing_liquid or check_node_name == "air" then
-					set_node(pos, check_node)
-					set_node(check_pos, node)
-					return
+dynamic_liquid.liquid_abm = function(liquid, flowing_liquid, chance)
+	minetest.register_abm({
+		label = "dynamic_liquid " .. liquid,
+		nodenames = {liquid},
+		neighbors = {air},
+		interval = 0.5,
+		chance = 0.5, -- chance or 1,
+		catch_up = true,
+		action = function(pos,node) -- Do everything possible to optimize this method
+-- Gravity first! If the node is above an air block, it must fall.
+			local i = 1
+			local check_pos = {x=pos.x, y=pos.y-i, z=pos.z}
+			local check_node = get_node(check_pos)
+			local check_node_name = check_node.name
+			if check_node_name == flowing_liquid or check_node_name == "air" then
+				swap_node(pos, check_node)
+				swap_node(check_pos, node)
+-- if node fall, no momentum needed above it, so delete it
+				local meta = minetest.get_meta(pos)
+				local momentum = minetest.deserialize(meta:get_string("momentum"))
+				if meta:contains("momentum") then
+					meta:set_string("momentum", "")
 				end
-				local perm = all_direction_permutations[math.random(24)]
-				local dirs -- declare outside of loop so it won't keep entering/exiting scope
-				for i=1,4 do
-					dirs = perm[i]
-					-- reuse check_pos to avoid allocating a new table
+				return
+			end
+-- Momentum next! If it started moving in a direction, then continue until it reaches an obstacle.
+			local meta = minetest.get_meta(pos)
+			local momentum = minetest.deserialize(meta:get_string("momentum"))
+			if meta:contains("momentum") then -- if metadata exist
+--				minetest.chat_send_all("node has momentum!")
+				local check_pos = vector.add(pos, momentum)
+				check_node = get_node(check_pos)
+				local check_node_name = check_node.name
+				if check_node_name == flowing_liquid or check_node_name == "air" then -- if no obstacles
+--detect if water is going "against a previous flow"
+					local meta = minetest.get_meta(check_pos)
+					local momentumfront = minetest.deserialize(meta:get_string("momentum"))
+--if not, just continue according to momentum
+					if not meta:contains("momentum") or vector.equals(vector.add(momentum, momentumfront), vector.direction(momentum, momentum)) ~= true then
+						swap_node(pos, check_node)
+						swap_node(check_pos, node)
+						local meta = minetest.get_meta(check_pos)
+						meta:set_string("momentum", minetest.serialize(vector.subtract(check_pos, pos)))
+						return
+-- if it does, just start moving randomly again
+-- improvement idea : try to move left or right first, or even diagonal front left or right
+-- idea 2 : if stuck in a trench, move according to momentum anyway
+					else
+						-- minetest.chat_send_all("node is going against the flow, abort!")
+					end
+				-- minetest.chat_send_all("end 1")
+				end
+			-- minetest.chat_send_all("node meets wall :(")
+			end
+		-- minetest.chat_send_all("after end")
+-- don't turn back, explore new areas first!
+
+-- You are a water node, not an ice node. Keep moving even if it doesn't make sense!
+			local perm = all_direction_permutations[math.random(24)]
+			local dirs -- declare outside of loop so it won't keep entering/exiting scope
+			for i=1,4 do
+				dirs = perm[i]
+				-- reuse check_pos to avoid allocating a new table
+				local check_pos = {x=pos.x, y=pos.y, z=pos.z}
+				check_pos.x = pos.x + dirs.x 
+				check_pos.y = pos.y
+				check_pos.z = pos.z + dirs.z
+				check_node = get_node(check_pos)
+				check_node_name = check_node.name
+				if check_node_name == flowing_liquid or check_node_name == "air" then
+					swap_node(pos, check_node)
+					swap_node(check_pos, node)
+					local meta = minetest.get_meta(check_pos) -- meta = metadata at te checked position
+					local momentum = vector.subtract(check_pos, pos)
+					meta:set_string("momentum", minetest.serialize(momentum))
+-- Follow me! Water nodes that start moving for the first time also set the metadata to the node behind them (according to its momentum). 
 					check_pos.x = pos.x + dirs.x 
 					check_pos.y = pos.y
 					check_pos.z = pos.z + dirs.z
-					check_node = get_node(check_pos)
-					check_node_name = check_node.name
-					if check_node_name == flowing_liquid or check_node_name == "air" then
-						set_node(pos, check_node)
-						set_node(check_pos, node)
-						return
+					local meta = minetest.get_meta(check_pos)
+					if check_node_name == liquid then
+						meta:set_string("momentum", minetest.serialize(momentum))
 					end
-				end
-			end
-		})	
-		dynamic_liquid.registered_liquids[liquid] = flowing_liquid
-		table.insert(dynamic_liquid.registered_liquid_neighbors, liquid)
-	end
-
-else
--- version with altitude check
-	dynamic_liquid.liquid_abm = function(liquid, flowing_liquid, chance)
-		minetest.register_abm({
-			label = "dynamic_liquid " .. liquid .. " and " .. flowing_liquid .. " with altitude check",
-			nodenames = {liquid},
-			neighbors = {flowing_liquid},
-			interval = 1,
-			chance = chance or 1,
-			catch_up = false,
-			action = function(pos,node) -- Do everything possible to optimize this method
-				-- This altitude check is the only difference from the version above.
-				-- If the altitude check is disabled we don't ever need to make the comparison,
-				-- hence the two different versions.
-				if pos.y > disable_flow_above then
 					return
 				end
-				local check_pos = {x=pos.x, y=pos.y-1, z=pos.z}
-				local check_node = get_node(check_pos)
-				local check_node_name = check_node.name
-				if check_node_name == flowing_liquid or check_node_name == "air" then
-					set_node(pos, check_node)
-					set_node(check_pos, node)
-					return
-				end
-				local perm = all_direction_permutations[math.random(24)]
-				local dirs -- declare outside of loop so it won't keep entering/exiting scope
-				for i=1,4 do
-					dirs = perm[i]
-					-- reuse check_pos to avoid allocating a new table
-					check_pos.x = pos.x + dirs.x 
-					check_pos.y = pos.y
-					check_pos.z = pos.z + dirs.z
-					check_node = get_node(check_pos)
-					check_node_name = check_node.name
-					if check_node_name == flowing_liquid or check_node_name == "air" then
-						set_node(pos, check_node)
-						set_node(check_pos, node)
-						return
-					end
-				end
 			end
-		})	
-		dynamic_liquid.registered_liquids[liquid] = flowing_liquid
-		table.insert(dynamic_liquid.registered_liquid_neighbors, liquid)
-	end
-
+		end
+	})		
+	dynamic_liquid.registered_liquids[liquid] = flowing_liquid
+	table.insert(dynamic_liquid.registered_liquid_neighbors, liquid)
 end
 
 if not minetest.get_modpath("default") then
@@ -167,6 +171,9 @@ local springs = minetest.settings:get_bool("dynamic_liquid_springs", true)
 
 if water then
 	-- override water_source and water_flowing with liquid_renewable set to false
+	local override_def = {liquid_range = 0} -- {liquid_renewable = false}
+	minetest.override_item("default:water_source", override_def)
+	minetest.override_item("default:water_flowing", override_def)
 	local override_def = {liquid_renewable = false}
 	minetest.override_item("default:water_source", override_def)
 	minetest.override_item("default:water_flowing", override_def)
@@ -211,8 +218,8 @@ if flow_through then
 			if source_flowing_node ~= nil then
 				dest_node = minetest.get_node(dest_pos)
 				if dest_node.name == source_flowing_node or dest_node.name == "air" then
-					set_node(dest_pos, source_node)
-					set_node(source_pos, dest_node)
+					swap_node(dest_pos, source_node)
+					swap_node(source_pos, dest_node)
 					return
 				end
 			end
@@ -238,8 +245,8 @@ if flow_through then
 				if (source_flowing_node ~= nil and (dest_node.name == source_flowing_node or dest_node.name == "air")) or
 					(dest_flowing_node ~= nil and (source_node.name == dest_flowing_node or source_node.name == "air"))
 				then
-					set_node(source_pos, dest_node)
-					set_node(dest_pos, source_node)
+					swap_node(source_pos, dest_node)
+					swap_node(dest_pos, source_node)
 					return
 				end
 			end		
@@ -358,7 +365,7 @@ if springs then
 				check_node = get_node(pos)
 				check_node_name = check_node.name
 				if check_node_name == "air" or check_node_name == "default:water_flowing" then
-					set_node(pos, {name="default:water_source"})
+					swap_node(pos, {name="default:water_source"})
 				elseif check_node_name ~= "default:water_source" then
 					--Something's been put on top of this clay, don't send water through it
 					break
@@ -401,7 +408,7 @@ if springs then
 			local check_node = get_node(pos)
 			local check_node_name = check_node.name
 			if check_node_name == "air" or check_node_name == "default:water_flowing" then
-				set_node(pos, {name="default:water_source"})
+				swap_node(pos, {name="default:water_source"})
 			end
 		end
 	})	
