@@ -1,12 +1,14 @@
-The fork is a personal experiment to improve the dynamic_liquid mod.
+## About the fork
 
-The original idea: in the original mod, water nodes move in a random direction each step, making them more likely to "move in circle". I decided to make the nodes explore more areas more efficiently, hence finding holes to fall through faster. 
+This fork is a personal experiment to improve the dynamic_liquid mod.
+
+The idea: in the original mod, water nodes move in a random direction each step, making them more likely to "move in circle". I decided to make the nodes explore more areas more efficiently, hence finding holes to fall through faster. 
 
 Here is how I did it: when a water node moves, it adds a metadata called "momentum" both to the node it leaves, and its destination. It uses that metadata to keep moving in the same direction until it reaches an obstacle. It also leaves behind itself a trail of metadatas that are used in two ways :
 - water nodes will use those metadatas and follow them like an invisible path
 - water nodes will avoid going "against the flow", and especially avoid going back on their tracks (or another water node track)
 
-This allows water to drain down holes or settle much faster. It has the downside of using a lot of metadatas, and leaving them behind.
+This allows water to drain down holes or settle much faster. It has the downside of using a lot of metadatas, and leaving them behind. (it only removes the metadatas when falling down)
 The momentum also allows to skip some steps in most cases, but I am not sure if the code runs faster, or if the same amount of CPU is used, or even more.
 
 *ORIGINAL TEXT*
